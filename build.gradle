@@ -4,20 +4,42 @@ plugins {
 version = project.mod_version
 group = 'dev.diamondstrength'
 base { archivesName = 'diamondstrength' }
-repositories {}
+
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 }
-processResources {
-    inputs.property "version", project.version
-    filesMatching("fabric.mod.json") { expand "version": project.version }
+
+// ---- FLAT LAYOUT: all files sit in the repo root, so uploading can't scramble folders ----
+sourceSets {
+    main {
+        java {
+            srcDirs = ['.']
+            include '*.java'
+        }
+    }
 }
+
+// Builds the proper resource folders (assets/, data/, fabric.mod.json) from the flat files
+def genRes = tasks.register('assembleResources', Copy) {
+    into layout.buildDirectory.dir('generated-resources')
+    from('fabric.mod.json') { expand 'version': project.version }
+    from('en_us.json') { into 'assets/diamondstrength/lang' }
+    from('strength_bottle.png') { into 'assets/diamondstrength/textures/item' }
+    from('diamond_heart.png') { into 'assets/diamondstrength/textures/item' }
+    from('model_strength_bottle.json') { into 'assets/diamondstrength/models/item'; rename { 'strength_bottle.json' } }
+    from('model_diamond_heart.json') { into 'assets/diamondstrength/models/item'; rename { 'diamond_heart.json' } }
+    from('itemdef_strength_bottle.json') { into 'assets/diamondstrength/items'; rename { 'strength_bottle.json' } }
+    from('itemdef_diamond_heart.json') { into 'assets/diamondstrength/items'; rename { 'diamond_heart.json' } }
+    from('loot_diamond_ore.json') { into 'data/minecraft/loot_table/blocks'; rename { 'diamond_ore.json' } }
+    from('loot_deepslate_diamond_ore.json') { into 'data/minecraft/loot_table/blocks'; rename { 'deepslate_diamond_ore.json' } }
+}
+sourceSets.main.resources.srcDir(genRes)
+
 tasks.withType(JavaCompile).configureEach { it.options.release = 21 }
 java {
-    withSourcesJar()
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
 }
