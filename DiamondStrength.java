@@ -322,7 +322,6 @@ public class DiamondStrength implements ModInitializer {
         Vec3d dir = pos(p).subtract(pos(target)).normalize();
         double power = 1.0 + 0.4 * lvl;
         target.setVelocity(dir.x * power, 0.35, dir.z * power);
-        target.velocityModified = true;
         if (target instanceof ServerPlayerEntity tp) tp.networkHandler.sendPacket(new EntityVelocityUpdateS2CPacket(tp));
         return true;
     }
