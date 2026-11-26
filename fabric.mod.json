@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "diamondstrength",
+  "version": "${version}",
+  "name": "Diamond Strength",
+  "description": "Deposit diamonds for strength, kill players for diamond hearts and abilities.",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.diamondstrength.DiamondStrength"],
+    "client": ["dev.diamondstrength.DiamondStrengthClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.18.0",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
