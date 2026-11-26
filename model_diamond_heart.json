@@ -1,1 +1,6 @@
-{ "parent": "item/generated", "textures": { "layer0": "diamondstrength:item/diamond_heart" } }
+{
+ "parent": "minecraft:item/generated",
+ "textures": {
+  "layer0": "diamondstrength:item/diamond_heart"
+ }
+}

@@ -1,5 +1,6 @@
 package dev.diamondstrength;
 
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.biome.v1.BiomeModifications;
 import net.fabricmc.fabric.api.biome.v1.BiomeSelectors;
@@ -90,7 +91,10 @@ public class DiamondStrength implements ModInitializer {
                             Text.literal("Right-click: +0.5 strength").formatted(Formatting.AQUA),
                             Text.literal("No effect once strength is maxed").formatted(Formatting.GRAY))))));
     public static final Item DIAMOND_HEART = Registry.register(Registries.ITEM, HEART_KEY,
-            new Item(new Item.Settings().registryKey(HEART_KEY).maxCount(16)));
+            new DiamondHeartItem(new Item.Settings().registryKey(HEART_KEY).maxCount(16)
+                    .component(DataComponentTypes.LORE, new LoreComponent(List.of(
+                            Text.literal("Right-click: +1 Diamond Heart").formatted(Formatting.AQUA),
+                            Text.literal("No effect if hearts are maxed").formatted(Formatting.GRAY))))));
 
     static MinecraftServer SERVER;
 
@@ -182,6 +186,17 @@ public class DiamondStrength implements ModInitializer {
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             dispatcher.register(CommandManager.literal("deposit")
                     .executes(ctx -> deposit(ctx.getSource().getPlayerOrThrow())));
+            var withdraw = dispatcher.register(CommandManager.literal("withdraw")
+                    .then(CommandManager.literal("heart")
+                            .executes(ctx -> withdrawHeart(ctx.getSource().getPlayerOrThrow(), 1))
+                            .then(CommandManager.argument("amount", IntegerArgumentType.integer(1))
+                                    .executes(ctx -> withdrawHeart(ctx.getSource().getPlayerOrThrow(), IntegerArgumentType.getInteger(ctx, "amount")))))
+                    .then(CommandManager.literal("strength")
+                            .executes(ctx -> withdrawStrength(ctx.getSource().getPlayerOrThrow(), 1))
+                            .then(CommandManager.argument("amount", IntegerArgumentType.integer(1))
+                                    .executes(ctx -> withdrawStrength(ctx.getSource().getPlayerOrThrow(), IntegerArgumentType.getInteger(ctx, "amount"))))));
+            dispatcher.register(CommandManager.literal("withdrawal").redirect(withdraw));
+
             dispatcher.register(CommandManager.literal("ability")
                     .then(CommandManager.literal("info").executes(ctx -> info(ctx.getSource().getPlayerOrThrow())))
                     .then(CommandManager.literal("use").executes(ctx -> use(ctx.getSource().getPlayerOrThrow()))));
@@ -192,6 +207,9 @@ public class DiamondStrength implements ModInitializer {
     static void apply(ServerPlayerEntity p) {
         if (SERVER == null) return;
         StrengthState.Data d = StrengthState.get(SERVER).of(p.getUuid());
+        d.deposits = Rules.clamp(d.deposits, 0, MAX_DEPOSITS);
+        d.hearts = Rules.clamp(d.hearts, 0, MAX_HEARTS);
+        d.abilityLevel = Rules.clamp(d.abilityLevel, 0, 3);
         setMod(p, EntityAttributes.ATTACK_DAMAGE, "strength", d.deposits * STRENGTH_PER_DEPOSIT * DAMAGE_PER_STRENGTH);
         setMod(p, EntityAttributes.MAX_HEALTH, "hearts", d.hearts * HP_PER_DIAMOND_HEART);
         setMod(p, EntityAttributes.ARMOR, "fortify",
@@ -211,22 +229,18 @@ public class DiamondStrength implements ModInitializer {
     }
 
     // ================= /deposit : 20 diamonds -> one Strength Bottle item =================
-    static int deposit(ServerPlayerEntity p) {
-        StrengthState.Data d = StrengthState.get(SERVER).of(p.getUuid());
-        if (d.deposits >= MAX_DEPOSITS) {
-            msg(p, "Your strength is maxed - you can't get more.", Formatting.YELLOW);
-            return 0;
-        }
+    static int countDiamonds(ServerPlayerEntity p) {
         int have = 0;
         for (int i = 0; i < p.getInventory().size(); i++) {
             ItemStack s = p.getInventory().getStack(i);
             if (s.isOf(Items.DIAMOND)) have += s.getCount();
         }
-        if (have < DIAMONDS_PER_DEPOSIT) {
-            msg(p, "You need " + DIAMONDS_PER_DEPOSIT + " diamonds (you have " + have + ").", Formatting.RED);
-            return 0;
-        }
-        int left = DIAMONDS_PER_DEPOSIT;
+        return have;
+    }
+
+    /** Removes up to n diamonds and returns how many were really removed. */
+    static int removeDiamonds(ServerPlayerEntity p, int n) {
+        int left = n;
         for (int i = 0; i < p.getInventory().size() && left > 0; i++) {
             ItemStack s = p.getInventory().getStack(i);
             if (s.isOf(Items.DIAMOND)) {
@@ -235,8 +249,28 @@ public class DiamondStrength implements ModInitializer {
                 left -= take;
             }
         }
-        ItemStack bottle = new ItemStack(STRENGTH_BOTTLE);
-        if (!p.getInventory().insertStack(bottle)) p.dropItem(bottle, false);
+        return n - left;
+    }
+
+    static int deposit(ServerPlayerEntity p) {
+        StrengthState.Data d = StrengthState.get(SERVER).of(p.getUuid());
+        if (d.deposits >= MAX_DEPOSITS) {
+            msg(p, "Your strength is maxed - you can't get more.", Formatting.YELLOW);
+            return 0;
+        }
+        int have = countDiamonds(p);
+        if (!Rules.canDeposit(d.deposits, MAX_DEPOSITS, have, DIAMONDS_PER_DEPOSIT)) {
+            msg(p, "You need " + DIAMONDS_PER_DEPOSIT + " diamonds (you have " + have + ").", Formatting.RED);
+            return 0;
+        }
+        int removed = removeDiamonds(p, DIAMONDS_PER_DEPOSIT);
+        if (removed != DIAMONDS_PER_DEPOSIT) {
+            // should never happen - undo and stop so nothing is ever created from thin air
+            if (removed > 0) give(p, new ItemStack(Items.DIAMOND, removed));
+            msg(p, "Something went wrong - nothing was taken.", Formatting.RED);
+            return 0;
+        }
+        give(p, new ItemStack(STRENGTH_BOTTLE));
         msg(p, "You received a Diamond Strength Bottle! Right-click it to drink (+0.5 strength).", Formatting.GREEN);
         return 1;
     }
@@ -244,7 +278,7 @@ public class DiamondStrength implements ModInitializer {
     /** Called when a bottle is drunk. Returns false (bottle NOT consumed) if strength is already maxed. */
     static boolean drink(ServerPlayerEntity p) {
         StrengthState.Data d = StrengthState.get(SERVER).of(p.getUuid());
-        if (d.deposits >= MAX_DEPOSITS) {
+        if (!Rules.canDrinkBottle(d.deposits, MAX_DEPOSITS)) {
             msg(p, "Your strength is already maxed - the bottle has no effect.", Formatting.YELLOW);
             return false;
         }
@@ -256,6 +290,54 @@ public class DiamondStrength implements ModInitializer {
             msg(p, "Strength is now " + (d.deposits * STRENGTH_PER_DEPOSIT), Formatting.GREEN);
         }
         apply(p);
+        return true;
+    }
+
+    // ================= /withdraw heart|strength =================
+    static void give(ServerPlayerEntity p, ItemStack stack) {
+        p.getInventory().insertStack(stack);              // may only partly fit
+        if (!stack.isEmpty()) p.dropItem(stack, false);   // drop whatever is left, never lose it
+    }
+
+    static int withdrawStrength(ServerPlayerEntity p, int amount) {
+        StrengthState.Data d = StrengthState.get(SERVER).of(p.getUuid());
+        if (d.deposits <= 0) { msg(p, "You have no strength to withdraw.", Formatting.RED); return 0; }
+        if (!Rules.canWithdraw(d.deposits, amount)) {
+            msg(p, "You only have " + d.deposits + " bottle(s) worth of strength (" + (d.deposits * STRENGTH_PER_DEPOSIT) + ").", Formatting.RED);
+            return 0;
+        }
+        d.deposits -= amount;
+        give(p, new ItemStack(STRENGTH_BOTTLE, amount));
+        apply(p);
+        msg(p, "Withdrew " + amount + " Diamond Strength Bottle(s). Strength is now " + (d.deposits * STRENGTH_PER_DEPOSIT), Formatting.AQUA);
+        return 1;
+    }
+
+    static int withdrawHeart(ServerPlayerEntity p, int amount) {
+        StrengthState.Data d = StrengthState.get(SERVER).of(p.getUuid());
+        if (d.hearts <= 0) { msg(p, "You have no Diamond Hearts to withdraw.", Formatting.RED); return 0; }
+        if (!Rules.canWithdraw(d.hearts, amount)) {
+            msg(p, "You only have " + d.hearts + " Diamond Heart(s).", Formatting.RED);
+            return 0;
+        }
+        d.hearts -= amount;
+        give(p, new ItemStack(DIAMOND_HEART, amount));
+        apply(p);
+        msg(p, "Withdrew " + amount + " Diamond Heart(s). You now have " + d.hearts + "/" + MAX_HEARTS + ".", Formatting.AQUA);
+        return 1;
+    }
+
+    /** Called when a Diamond Heart item is used. False = not consumed. */
+    static boolean useHeart(ServerPlayerEntity p) {
+        StrengthState.Data d = StrengthState.get(SERVER).of(p.getUuid());
+        if (!Rules.canUseHeart(d.heartUnlocked, d.hearts, MAX_HEARTS)) {
+            msg(p, d.heartUnlocked ? "You already have the max Diamond Hearts."
+                                   : "Reach max strength before you can use Diamond Hearts.", Formatting.YELLOW);
+            return false;
+        }
+        d.hearts++;
+        apply(p);
+        msg(p, "Diamond Hearts: " + d.hearts + "/" + MAX_HEARTS, Formatting.AQUA);
         return true;
     }
 

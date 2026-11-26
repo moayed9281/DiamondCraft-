@@ -28,6 +28,7 @@ def genRes = tasks.register('assembleResources', Copy) {
     from('fabric.mod.json') { expand 'version': project.version }
     from('en_us.json') { into 'assets/diamondstrength/lang' }
     from('strength_bottle.png') { into 'assets/diamondstrength/textures/item' }
+    from('strength_bottle_3d.png') { into 'assets/diamondstrength/textures/item' }
     from('diamond_heart.png') { into 'assets/diamondstrength/textures/item' }
     from('model_strength_bottle.json') { into 'assets/diamondstrength/models/item'; rename { 'strength_bottle.json' } }
     from('model_diamond_heart.json') { into 'assets/diamondstrength/models/item'; rename { 'diamond_heart.json' } }

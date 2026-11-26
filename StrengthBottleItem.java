@@ -21,7 +21,7 @@ public class StrengthBottleItem extends Item {
         // Does nothing (and is NOT consumed) if strength is already maxed
         if (!DiamondStrength.drink(p)) return ActionResult.FAIL;
 
-        if (!p.isCreative()) stack.decrement(1);
+        stack.decrement(1);
         world.playSound(null, p.getX(), p.getY(), p.getZ(), SoundEvents.ENTITY_GENERIC_DRINK, SoundCategory.PLAYERS, 1.0f, 1.0f);
         return ActionResult.SUCCESS;
     }
