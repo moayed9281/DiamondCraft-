@@ -44,6 +44,14 @@ final class Rules {
         return Math.min(maxDeposits, deposits + unitsPerKill);
     }
 
+    enum DeathLoss { NONE, STRENGTH, HEART }
+
+    /** What a death costs: at full strength you lose a heart (if you have one), otherwise 0.5 strength. */
+    static DeathLoss deathLoss(int deposits, int maxDeposits, int hearts) {
+        if (deposits >= maxDeposits) return hearts > 0 ? DeathLoss.HEART : DeathLoss.NONE;
+        return deposits > 0 ? DeathLoss.STRENGTH : DeathLoss.NONE;
+    }
+
     static int clamp(int v, int lo, int hi) {
         return Math.max(lo, Math.min(hi, v));
     }

@@ -17,6 +17,7 @@ import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.LoreComponent;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
+import net.minecraft.entity.ItemEntity;
 import net.minecraft.entity.LightningEntity;
 import net.minecraft.entity.SpawnReason;
 import net.minecraft.entity.LivingEntity;
@@ -67,7 +68,7 @@ public class DiamondStrength implements ModInitializer {
     static final int MAX_HEARTS = 5;                          // 5 kills -> 5 hearts
     static final double HP_PER_DIAMOND_HEART = 2.0;           // 1 diamond heart = 1 extra heart
     static final int MAX_TEAM_SIZE = 4;                       // players per team
-    static final boolean TEAM_KILL_COSTS_VICTIM = true;       // teammates can still kill each other; the victim still loses a heart/strength
+    static final boolean TEAM_KILL_COSTS_VICTIM = false;      // teammates can still kill each other, but nothing is lost or dropped (stops farming the drops)
 
     // 0-4 are ACTIVE (press the key), 5-7 are PASSIVE. Each player is randomly given ONE.
     public static final String[] NAMES = {"dash", "pull", "pulse", "shockwave", "bolt", "stun", "lifesteal", "fortify"};
@@ -153,12 +154,18 @@ public class DiamondStrength implements ModInitializer {
             ServerPlayerEntity killer = (source.getAttacker() instanceof ServerPlayerEntity k && k != victim) ? k : null;
             boolean teamKill = killer != null && sameTeam(state.of(killer.getUuid()), v);
 
-            // Death penalty: at full strength you lose a heart only, otherwise you lose strength
+            // Death (ANY cause: players, mobs, fall, lava, void...): what you lose drops as an item where you died
             if (!teamKill || TEAM_KILL_COSTS_VICTIM) {
-                if (v.deposits >= MAX_DEPOSITS) {
-                    if (v.hearts > 0) v.hearts--;
-                } else if (v.deposits > 0) {
-                    v.deposits--;
+                switch (Rules.deathLoss(v.deposits, MAX_DEPOSITS, v.hearts)) {
+                    case STRENGTH -> {
+                        v.deposits--;                                     // -0.5 strength
+                        dropItem(victim, new ItemStack(STRENGTH_BOTTLE)); // ...becomes a bottle
+                    }
+                    case HEART -> {
+                        v.hearts--;                                       // -1 heart
+                        dropItem(victim, new ItemStack(DIAMOND_HEART));   // ...becomes a heart item
+                    }
+                    default -> {}
                 }
             }
 
@@ -330,6 +337,14 @@ public class DiamondStrength implements ModInitializer {
         }
         apply(p);
         return true;
+    }
+
+    /** Drops an item at the player's position (used for what you lose when you die). */
+    static void dropItem(ServerPlayerEntity p, ItemStack stack) {
+        ServerWorld w = world(p);
+        ItemEntity e = new ItemEntity(w, p.getX(), p.getY() + 0.5, p.getZ(), stack);
+        e.setToDefaultPickupDelay();
+        w.spawnEntity(e);
     }
 
     // ================= teams =================

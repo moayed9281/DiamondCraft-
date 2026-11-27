@@ -15,3 +15,7 @@ KILL REWARDS (one player kill = one step of the stage you are in; teammates give
   strength not full  -> +1.0 strength (3 kills = max)
   strength full      -> +1 Diamond Heart (max 5)
   hearts full        -> +1 ability level (unlocks at level 1, max 3)
+
+DEATH DROPS (any cause of death): below full strength you lose 0.5 strength and a Diamond Strength Bottle drops where you died;
+at full strength you lose 1 Diamond Heart (if you have one) and a Diamond Heart item drops. Abilities are never lost.
+Killing a teammate: no reward AND nothing is lost/dropped (so teammates can't farm the drops).
