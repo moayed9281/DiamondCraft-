@@ -12,6 +12,7 @@ import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.command.argument.EntityArgumentType;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.LoreComponent;
 import net.minecraft.entity.Entity;
@@ -50,6 +51,7 @@ import net.minecraft.world.gen.feature.OrePlacedFeatures;
 
 import java.util.HashMap;
 import java.util.List;
+import java.util.UUID;
 import java.util.Map;
 
 public class DiamondStrength implements ModInitializer {
@@ -60,8 +62,12 @@ public class DiamondStrength implements ModInitializer {
     public static final int MAX_DEPOSITS = 6;                 // 6 bottles drunk = max strength
     public static final double STRENGTH_PER_DEPOSIT = 0.5;    // each bottle = +0.5 strength (3.0 max)
     static final double DAMAGE_PER_STRENGTH = 1.0;            // +1 attack damage per 1.0 strength
+    static final double STRENGTH_PER_KILL = 1.0;                // a kill gives +1 strength while strength isn't full
+    static final int UNITS_PER_KILL = (int) Math.round(STRENGTH_PER_KILL / STRENGTH_PER_DEPOSIT);
     static final int MAX_HEARTS = 5;                          // 5 kills -> 5 hearts
     static final double HP_PER_DIAMOND_HEART = 2.0;           // 1 diamond heart = 1 extra heart
+    static final int MAX_TEAM_SIZE = 4;                       // players per team
+    static final boolean TEAM_KILL_COSTS_VICTIM = true;       // teammates can still kill each other; the victim still loses a heart/strength
 
     // 0-4 are ACTIVE (press the key), 5-7 are PASSIVE. Each player is randomly given ONE.
     public static final String[] NAMES = {"dash", "pull", "pulse", "shockwave", "bolt", "stun", "lifesteal", "fortify"};
@@ -123,6 +129,7 @@ public class DiamondStrength implements ModInitializer {
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             ServerPlayerEntity p = handler.getPlayer();
             StrengthState.Data d = StrengthState.get(server).of(p.getUuid());
+            d.name = p.getName().getString();
             if (d.ability < 0) {
                 d.ability = p.getRandom().nextInt(NAMES.length);
                 msg(p, "Your ability is " + NAMES[d.ability].toUpperCase()
@@ -141,28 +148,51 @@ public class DiamondStrength implements ModInitializer {
             if (!(entity instanceof ServerPlayerEntity victim)) return;
             if (SERVER == null) return;
             StrengthState state = StrengthState.get(SERVER);
-
             StrengthState.Data v = state.of(victim.getUuid());
-            if (v.heartUnlocked) {
-                if (v.hearts > 0) v.hearts--;           // lose a heart only
-            } else if (v.deposits > 0) {
-                v.deposits--;                            // lose 0.5 strength
-            }
 
-            if (source.getAttacker() instanceof ServerPlayerEntity killer && killer != victim) {
-                StrengthState.Data k = state.of(killer.getUuid());
-                if (k.heartUnlocked) {
-                    if (k.hearts < MAX_HEARTS) {
-                        k.hearts++;
-                        msg(killer, "You gained a Diamond Heart! (" + k.hearts + "/" + MAX_HEARTS + ")", Formatting.AQUA);
-                    } else if (k.ability >= 0 && k.abilityLevel < 3) {
-                        k.abilityLevel++;
-                        msg(killer, (k.abilityLevel == 1 ? NAMES[k.ability] + " unlocked!" : NAMES[k.ability] + " upgraded to level " + k.abilityLevel + "!"),
-                                Formatting.GOLD);
-                    }
-                    apply(killer);
+            ServerPlayerEntity killer = (source.getAttacker() instanceof ServerPlayerEntity k && k != victim) ? k : null;
+            boolean teamKill = killer != null && sameTeam(state.of(killer.getUuid()), v);
+
+            // Death penalty: at full strength you lose a heart only, otherwise you lose strength
+            if (!teamKill || TEAM_KILL_COSTS_VICTIM) {
+                if (v.deposits >= MAX_DEPOSITS) {
+                    if (v.hearts > 0) v.hearts--;
+                } else if (v.deposits > 0) {
+                    v.deposits--;
                 }
             }
+
+            if (killer == null) return;
+            StrengthState.Data k = state.of(killer.getUuid());
+            if (teamKill) {
+                msg(killer, "No reward - that player is on your team.", Formatting.GRAY);
+                return;
+            }
+
+            // One kill = one step of the stage you are in
+            Rules.Reward reward = Rules.killReward(false, k.deposits, MAX_DEPOSITS, k.hearts, MAX_HEARTS, k.abilityLevel, 3);
+            switch (reward) {
+                case STRENGTH -> {
+                    k.deposits = Rules.strengthAfterKill(k.deposits, MAX_DEPOSITS, UNITS_PER_KILL);
+                    msg(killer, "Kill! Strength is now " + (k.deposits * STRENGTH_PER_DEPOSIT) + "/" + (MAX_DEPOSITS * STRENGTH_PER_DEPOSIT), Formatting.GREEN);
+                    if (k.deposits >= MAX_DEPOSITS) {
+                        k.heartUnlocked = true;
+                        msg(killer, "Max strength reached! Kill players to earn Diamond Hearts.", Formatting.AQUA);
+                    }
+                }
+                case HEART -> {
+                    k.hearts++;
+                    msg(killer, "You gained a Diamond Heart! (" + k.hearts + "/" + MAX_HEARTS + ")", Formatting.AQUA);
+                }
+                case ABILITY -> {
+                    if (k.ability < 0) return;
+                    k.abilityLevel++;
+                    msg(killer, (k.abilityLevel == 1 ? NAMES[k.ability] + " unlocked!" : NAMES[k.ability] + " upgraded to level " + k.abilityLevel + "!"),
+                            Formatting.GOLD);
+                }
+                default -> { return; }
+            }
+            apply(killer);
         });
 
         // ---- Passives that trigger on hit: stun + lifesteal ----
@@ -186,6 +216,15 @@ public class DiamondStrength implements ModInitializer {
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             dispatcher.register(CommandManager.literal("deposit")
                     .executes(ctx -> deposit(ctx.getSource().getPlayerOrThrow())));
+            dispatcher.register(CommandManager.literal("team")
+                    .then(CommandManager.literal("add").then(CommandManager.argument("player", EntityArgumentType.player())
+                            .executes(ctx -> invite(ctx.getSource().getPlayerOrThrow(), EntityArgumentType.getPlayer(ctx, "player")))))
+                    .then(CommandManager.literal("invite").then(CommandManager.argument("player", EntityArgumentType.player())
+                            .executes(ctx -> invite(ctx.getSource().getPlayerOrThrow(), EntityArgumentType.getPlayer(ctx, "player")))))
+                    .then(CommandManager.literal("accept").executes(ctx -> acceptInvite(ctx.getSource().getPlayerOrThrow())))
+                    .then(CommandManager.literal("leave").executes(ctx -> leaveTeam(ctx.getSource().getPlayerOrThrow())))
+                    .then(CommandManager.literal("list").executes(ctx -> listTeam(ctx.getSource().getPlayerOrThrow()))));
+
             var withdraw = dispatcher.register(CommandManager.literal("withdraw")
                     .then(CommandManager.literal("heart")
                             .executes(ctx -> withdrawHeart(ctx.getSource().getPlayerOrThrow(), 1))
@@ -293,6 +332,82 @@ public class DiamondStrength implements ModInitializer {
         return true;
     }
 
+    // ================= teams =================
+    record Invite(UUID from, int expiresTick) {}
+    private static final Map<UUID, Invite> invites = new HashMap<>();
+
+    static boolean sameTeam(StrengthState.Data a, StrengthState.Data b) {
+        return !a.teamId.isEmpty() && a.teamId.equals(b.teamId);
+    }
+
+    static int invite(ServerPlayerEntity p, ServerPlayerEntity target) {
+        StrengthState state = StrengthState.get(SERVER);
+        if (target == p) { msg(p, "You can't invite yourself.", Formatting.RED); return 0; }
+        StrengthState.Data me = state.of(p.getUuid());
+        StrengthState.Data them = state.of(target.getUuid());
+        me.name = p.getName().getString();
+        them.name = target.getName().getString();
+        if (sameTeam(me, them)) { msg(p, them.name + " is already on your team.", Formatting.YELLOW); return 0; }
+        if (!them.teamId.isEmpty()) { msg(p, them.name + " is already in a team.", Formatting.RED); return 0; }
+        if (!me.teamId.isEmpty() && state.teamMembers(me.teamId).size() >= MAX_TEAM_SIZE) {
+            msg(p, "Your team is full (" + MAX_TEAM_SIZE + " players).", Formatting.RED);
+            return 0;
+        }
+        invites.put(target.getUuid(), new Invite(p.getUuid(), SERVER.getTicks() + 20 * 60));
+        msg(p, "Team invite sent to " + them.name + " (expires in 60 seconds).", Formatting.GREEN);
+        msg(target, me.name + " invited you to their team. Type /team accept (60 seconds).", Formatting.AQUA);
+        return 1;
+    }
+
+    static int acceptInvite(ServerPlayerEntity p) {
+        StrengthState state = StrengthState.get(SERVER);
+        Invite inv = invites.get(p.getUuid());
+        if (inv == null || SERVER.getTicks() > inv.expiresTick()) {
+            invites.remove(p.getUuid());
+            msg(p, "You have no team invite (it may have expired).", Formatting.RED);
+            return 0;
+        }
+        StrengthState.Data me = state.of(p.getUuid());
+        StrengthState.Data from = state.of(inv.from());
+        me.name = p.getName().getString();
+        if (!me.teamId.isEmpty()) { msg(p, "Leave your current team first (/team leave).", Formatting.RED); return 0; }
+        if (!from.teamId.isEmpty() && state.teamMembers(from.teamId).size() >= MAX_TEAM_SIZE) {
+            invites.remove(p.getUuid());
+            msg(p, "That team is full.", Formatting.RED);
+            return 0;
+        }
+        if (from.teamId.isEmpty()) from.teamId = UUID.randomUUID().toString();
+        me.teamId = from.teamId;
+        invites.remove(p.getUuid());
+        msg(p, "You joined " + (from.name.isEmpty() ? "the" : from.name + "'s") + " team.", Formatting.GREEN);
+        ServerPlayerEntity inviter = SERVER.getPlayerManager().getPlayer(inv.from());
+        if (inviter != null) msg(inviter, me.name + " joined your team.", Formatting.GREEN);
+        return 1;
+    }
+
+    static int leaveTeam(ServerPlayerEntity p) {
+        StrengthState state = StrengthState.get(SERVER);
+        StrengthState.Data me = state.of(p.getUuid());
+        if (me.teamId.isEmpty()) { msg(p, "You are not in a team.", Formatting.RED); return 0; }
+        String old = me.teamId;
+        me.teamId = "";
+        // a team of one doesn't exist - dissolve it
+        List<StrengthState.Data> rest = state.teamMembers(old);
+        if (rest.size() == 1) rest.get(0).teamId = "";
+        msg(p, "You left your team.", Formatting.YELLOW);
+        return 1;
+    }
+
+    static int listTeam(ServerPlayerEntity p) {
+        StrengthState state = StrengthState.get(SERVER);
+        StrengthState.Data me = state.of(p.getUuid());
+        if (me.teamId.isEmpty()) { msg(p, "You are not in a team. Use /team add <player>.", Formatting.GRAY); return 0; }
+        StringBuilder sb = new StringBuilder("Your team: ");
+        for (StrengthState.Data d : state.teamMembers(me.teamId)) sb.append(d.name.isEmpty() ? "?" : d.name).append("  ");
+        msg(p, sb.toString(), Formatting.AQUA);
+        return 1;
+    }
+
     // ================= /withdraw heart|strength =================
     static void give(ServerPlayerEntity p, ItemStack stack) {
         p.getInventory().insertStack(stack);              // may only partly fit
@@ -301,6 +416,10 @@ public class DiamondStrength implements ModInitializer {
 
     static int withdrawStrength(ServerPlayerEntity p, int amount) {
         StrengthState.Data d = StrengthState.get(SERVER).of(p.getUuid());
+        if (d.hearts > 0) {
+            msg(p, "Withdraw your Diamond Hearts first - hearts only work with max strength.", Formatting.RED);
+            return 0;
+        }
         if (d.deposits <= 0) { msg(p, "You have no strength to withdraw.", Formatting.RED); return 0; }
         if (!Rules.canWithdraw(d.deposits, amount)) {
             msg(p, "You only have " + d.deposits + " bottle(s) worth of strength (" + (d.deposits * STRENGTH_PER_DEPOSIT) + ").", Formatting.RED);
@@ -330,9 +449,9 @@ public class DiamondStrength implements ModInitializer {
     /** Called when a Diamond Heart item is used. False = not consumed. */
     static boolean useHeart(ServerPlayerEntity p) {
         StrengthState.Data d = StrengthState.get(SERVER).of(p.getUuid());
-        if (!Rules.canUseHeart(d.heartUnlocked, d.hearts, MAX_HEARTS)) {
-            msg(p, d.heartUnlocked ? "You already have the max Diamond Hearts."
-                                   : "Reach max strength before you can use Diamond Hearts.", Formatting.YELLOW);
+        if (!Rules.canUseHeart(d.deposits, MAX_DEPOSITS, d.hearts, MAX_HEARTS)) {
+            msg(p, d.deposits < MAX_DEPOSITS ? "You need max strength before you can use Diamond Hearts."
+                                             : "You already have the max Diamond Hearts.", Formatting.YELLOW);
             return false;
         }
         d.hearts++;

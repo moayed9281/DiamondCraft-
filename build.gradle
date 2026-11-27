@@ -3,7 +3,7 @@ plugins {
 }
 version = project.mod_version
 group = 'dev.diamondstrength'
-base { archivesName = 'diamondstrength' }
+base { archivesName = 'DiamondCraft-mod' }
 
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"

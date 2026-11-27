@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "diamondstrength",
   "version": "${version}",
-  "name": "Diamond Strength",
+  "name": "DiamondCraft",
   "description": "Deposit diamonds for strength, kill players for diamond hearts and abilities.",
   "environment": "*",
   "entrypoints": {
